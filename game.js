@@ -234,6 +234,28 @@ function collect(list){
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r);
   ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
+// 立體感三件套:色彩混合 + 球面漸層 + 高光/接地影(canvas 2D 假 3D,零相依;2026-07-21 回灌)
+function hex2rgb(h){ return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+function mixc(h, f){ // f>0 往白、f<0 往黑
+  var c = hex2rgb(h), t = f>0 ? 255 : 0, a = Math.abs(f);
+  return 'rgb('+Math.round(c[0]+(t-c[0])*a)+','+Math.round(c[1]+(t-c[1])*a)+','+Math.round(c[2]+(t-c[2])*a)+')';
+}
+function ballGrad(x, y, r, c1, c2){
+  var g = ctx.createRadialGradient(x - r*0.35, y - r*0.45, r*0.12, x, y, r*1.02);
+  g.addColorStop(0, mixc(c1, 0.55));
+  g.addColorStop(0.45, c1);
+  g.addColorStop(1, mixc(c2, -0.22));
+  return g;
+}
+function ballHighlight(x, y, r){
+  ctx.fillStyle = 'rgba(255,255,255,.45)';
+  ctx.beginPath(); ctx.ellipse(x - r*0.34, y - r*0.44, r*0.24, r*0.13, -0.55, 0, 7); ctx.fill();
+}
+function groundShadow(x, y, r){
+  ctx.fillStyle = 'rgba(70,50,20,.16)';
+  ctx.beginPath(); ctx.ellipse(x, y + r*0.86, r*0.78, r*0.2, 0, 0, 7); ctx.fill();
+}
+
 function drawFace(x,y,r,happy){
   // 臉部鐵則:每顆 tsum 都有眼和嘴
   ctx.fillStyle = '#3a2a18';
@@ -251,11 +273,12 @@ function drawTsum(t, xx, yy, rr){
   var x = xx!==undefined?xx:t.x, y = yy!==undefined?yy:t.y, r = (rr!==undefined?rr:t.r) * (t.hi? 1.13:1);
   var ty = t.t;
   ctx.save();
+  groundShadow(x, y, r);
   if (t.hi){ ctx.shadowColor = '#fff'; ctx.shadowBlur = 14; }
   if (ty.kind === 'bread'){
-    ctx.fillStyle = ty.c2;
+    ctx.fillStyle = mixc(ty.c2, -0.1);
     ctx.beginPath(); ctx.arc(x, y+r*0.06, r, 0, 7); ctx.fill();
-    ctx.fillStyle = ty.c1;
+    ctx.fillStyle = ballGrad(x, y-r*0.04, r*0.96, ty.c1, ty.c2);
     ctx.beginPath(); ctx.arc(x, y-r*0.04, r*0.96, 0, 7); ctx.fill();
     if (ty.dots){ ctx.fillStyle = 'rgba(90,60,30,.55)';
       for (var i=0;i<6;i++){ var a2=i*1.05+0.4; ctx.beginPath();
@@ -264,19 +287,21 @@ function drawTsum(t, xx, yy, rr){
       ctx.beginPath(); ctx.moveTo(x-r*0.35, y-r*0.5); ctx.quadraticCurveTo(x, y-r*0.7, x+r*0.35, y-r*0.5); ctx.stroke(); }
     if (ty.swirl){ ctx.strokeStyle='rgba(255,225,170,.7)'; ctx.lineWidth=r*0.09;
       ctx.beginPath(); ctx.arc(x, y-r*0.05, r*0.6, 2.6, 5.2); ctx.stroke(); }
+    ballHighlight(x, y-r*0.04, r*0.96);
     drawFace(x, y-r*0.02, r, t.hi);
   } else {
-    // 魚:圓身+尾鰭+背鰭,一樣有臉
-    ctx.fillStyle = ty.c2;
+    // 魚:圓身+尾鰭+背鰭,一樣有臉、一樣立體
+    ctx.fillStyle = mixc(ty.c2, -0.1);
     ctx.beginPath();
     ctx.moveTo(x+r*0.75, y);
     ctx.lineTo(x+r*1.25, y-r*0.5); ctx.lineTo(x+r*1.25, y+r*0.5); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = ty.c1;
+    ctx.fillStyle = ballGrad(x, y, r*0.95, ty.c1, ty.c2);
     ctx.beginPath(); ctx.arc(x, y, r*0.95, 0, 7); ctx.fill();
-    ctx.fillStyle = ty.c2;
+    ctx.fillStyle = mixc(ty.c2, -0.05);
     ctx.beginPath(); ctx.arc(x, y, r*0.95, -2.4, -0.7); ctx.lineTo(x, y-r*0.4); ctx.closePath(); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,.35)';
     ctx.beginPath(); ctx.arc(x-r*0.25, y+r*0.35, r*0.4, 0.3, 2.8); ctx.fill();
+    ballHighlight(x, y, r*0.95);
     drawFace(x-r*0.15, y-r*0.05, r*0.9, t.hi);
   }
   ctx.restore();
