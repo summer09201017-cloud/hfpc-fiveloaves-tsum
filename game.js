@@ -1,0 +1,542 @@
+/* 五餅二魚・越分越多 —— tsum 連鏈版(物理堆疊+劃線連同款)
+ * 反向化鑰匙:連線不是「消滅」,是「分給眾人」——越分越多(清 n 顆掉 n+1 顆),
+ * 終局眾人吃飽、還收拾十二籃零碎。經文:太14:19-21 / 約6:9-13(和合本,已 cuv 查驗)。
+ * 零相依、可離線、手機直向友善。榮耀歸神。
+ */
+(function(){
+'use strict';
+var W = 540, H = 960;
+var cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+cv.width = W; cv.height = H;
+
+// ---------- letterbox fit ----------
+function fit(){
+  var vw = innerWidth, vh = innerHeight, s = Math.min(vw/W, vh/H);
+  cv.style.width = (W*s)+'px'; cv.style.height = (H*s)+'px';
+}
+addEventListener('resize', fit); fit();
+
+// ---------- tsum 圖鑑:剛好五種餅+兩種魚(約6:9 五個大麥餅、兩條魚) ----------
+var TYPES = [
+  {id:'b0', kind:'bread', name:'大麥餅', c1:'#e8b64c', c2:'#c9923a'},
+  {id:'b1', kind:'bread', name:'芝麻餅', c1:'#c98a4b', c2:'#a86c34', dots:true},
+  {id:'b2', kind:'bread', name:'麥香餅', c1:'#d9a86c', c2:'#b8854a', wheat:true},
+  {id:'b3', kind:'bread', name:'薄餅',   c1:'#f0dcae', c2:'#d4b982'},
+  {id:'b4', kind:'bread', name:'蜜餅',   c1:'#e39348', c2:'#c47430', swirl:true},
+  {id:'f0', kind:'fish',  name:'藍魚',   c1:'#5aa7d8', c2:'#3f83b3'},
+  {id:'f1', kind:'fish',  name:'銀綠魚', c1:'#7cc39a', c2:'#569c74'}
+];
+
+// ---------- 年齡三檔(kid-age-modes) ----------
+var MODES = {
+  young:{ label:'幼幼(4-6)', types:4, minChain:2, target:500,  r:47, feed:20 },
+  kid:  { label:'兒童(7-11)', types:5, minChain:3, target:2000, r:40, feed:20 },
+  teen: { label:'青少年(12+)', types:7, minChain:3, target:5000, r:34, feed:20 }
+};
+var modeKey = 'kid';
+try{ modeKey = localStorage.getItem('l2f-mode') || 'kid'; }catch(e){}
+if(!MODES[modeKey]) modeKey = 'kid';
+var M = MODES[modeKey];
+
+// ---------- 版面 ----------
+var CROWD_TOP = 64, CROWD_H = 150;           // 上方群眾草地
+var PLAY_TOP = CROWD_TOP + CROWD_H + 8;      // 堆疊區頂
+var FLOOR = H - 26;                          // 堆疊區底
+
+// ---------- 狀態 ----------
+var tsums = [], chain = [], flying = [], sparks = [];
+var fed = 0, shownFed = 0, chainCount = 0, playing = false, won = false;
+var startTime = 0, doneSent = false;
+var blessT = 0;          // >0 = 祝福時刻(加倍)剩餘秒
+var nextBlessAt = 6;     // 第幾鏈觸發祝福
+var spawnQueue = 0, spawnTick = 0;
+var CAP = 46;
+var muted = false;
+try{ muted = localStorage.getItem('l2f-mute') === '1'; }catch(e){}
+var scene = 'menu';      // menu | play | win
+var banner = null;       // {text, t}
+
+function activeTypes(){
+  // 幼幼 4 款=2餅2魚好分辨;兒童 5;青少年 7 全員
+  if (M.types === 4) return [TYPES[0], TYPES[1], TYPES[5], TYPES[6]];
+  if (M.types === 5) return [TYPES[0], TYPES[1], TYPES[2], TYPES[5], TYPES[6]];
+  return TYPES;
+}
+
+// ---------- 音效/BGM(零檔案 WebAudio) ----------
+var AC = null;
+function ac(){ if(!AC){ try{ AC = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return AC; }
+function blip(f, dur, type, vol){
+  if (muted) return; var a = ac(); if(!a) return;
+  try{
+    var o = a.createOscillator(), g = a.createGain();
+    o.type = type||'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime((vol||0.12), a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + (dur||0.15));
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + (dur||0.15) + 0.02);
+  }catch(e){}
+}
+function chordCollect(n){
+  var base = 392; // G4
+  [0,4,7, n>=5?12:null].forEach(function(st,i){
+    if(st===null) return;
+    setTimeout(function(){ blip(base*Math.pow(2,st/12), 0.25, 'triangle', 0.1); }, i*40);
+  });
+}
+// 輕快 BGM:兩軌八小節循環(procedural-bgm 精簡版)
+var bgmTimer = null, bgmStep = 0;
+var MELO = [523,587,659,784, 659,587,523,392, 440,494,523,659, 587,523,494,392];
+var BASS = [131,131,175,175, 196,196,175,175, 147,147,175,175, 196,196,131,131];
+function bgmTick(){
+  if (muted || scene !== 'play') return;
+  var i = bgmStep % 16;
+  blip(BASS[i], 0.22, 'sine', 0.05);
+  if (bgmStep % 2 === 0) blip(MELO[(bgmStep/2)%16|0], 0.18, 'triangle', 0.045);
+  bgmStep++;
+}
+function bgmStart(){ if (bgmTimer) return; bgmTimer = setInterval(bgmTick, 240); }
+
+// ---------- 曉臻預烤語音(播報人聲鐵律:mp3 有就播,沒有就靜默,絕不機器聲) ----------
+var VOICES = { intro:'voice/intro.mp3', bless:'voice/bless.mp3', win:'voice/win.mp3' };
+var voiceEl = null, blessSpoken = false;
+function speak(key){
+  if (muted) return;
+  try{
+    if (voiceEl){ voiceEl.pause(); }
+    voiceEl = new Audio(VOICES[key]);
+    voiceEl.volume = 1; voiceEl.play().catch(function(){});
+  }catch(e){}
+}
+
+// ---------- 產生/物理(Verlet 圓) ----------
+function rnd(a,b){ return a + Math.random()*(b-a); }
+function spawnTsum(){
+  var ts = activeTypes();
+  var t = ts[(Math.random()*ts.length)|0];
+  tsums.push({ x:rnd(M.r+6, W-M.r-6), y:PLAY_TOP - rnd(20,140), px:0, py:0, r:M.r, t:t,
+               wob:Math.random()*6.28, hi:0 });
+  var s = tsums[tsums.length-1]; s.px = s.x; s.py = s.y - rnd(0,2);
+}
+function physics(dt){
+  var i, j, a, b;
+  for (i=0;i<tsums.length;i++){
+    a = tsums[i];
+    var vx = (a.x - a.px)*0.99, vy = (a.y - a.py)*0.99;
+    a.px = a.x; a.py = a.y;
+    a.x += vx; a.y += vy + 0.42;
+  }
+  for (var it=0; it<3; it++){
+    for (i=0;i<tsums.length;i++){
+      a = tsums[i];
+      if (a.x < a.r) a.x = a.r;
+      if (a.x > W-a.r) a.x = W-a.r;
+      if (a.y > FLOOR - a.r) a.y = FLOOR - a.r;
+      if (a.y < -200) a.y = -200;
+    }
+    for (i=0;i<tsums.length;i++){
+      for (j=i+1;j<tsums.length;j++){
+        a = tsums[i]; b = tsums[j];
+        var dx = b.x-a.x, dy = b.y-a.y, rr = a.r+b.r;
+        if (Math.abs(dx)>rr || Math.abs(dy)>rr) continue;
+        var d2 = dx*dx+dy*dy;
+        if (d2 >= rr*rr || d2 === 0) continue;
+        var d = Math.sqrt(d2), push = (rr-d)/d*0.5;
+        dx*=push; dy*=push;
+        a.x-=dx; a.y-=dy; b.x+=dx; b.y+=dy;
+      }
+    }
+  }
+}
+
+// ---------- 連鏈輸入 ----------
+var dragging = false;
+function evPos(e){
+  var r = cv.getBoundingClientRect();
+  var p = (e.touches && e.touches[0]) || e;
+  return { x:(p.clientX-r.left)/r.width*W, y:(p.clientY-r.top)/r.height*H };
+}
+function hitTsum(p){
+  for (var i=tsums.length-1;i>=0;i--){
+    var t = tsums[i], dx = p.x-t.x, dy = p.y-t.y;
+    if (dx*dx+dy*dy < t.r*t.r*1.1) return t;
+  }
+  return null;
+}
+function onDown(e){
+  e.preventDefault();
+  var p = evPos(e);
+  if (scene === 'menu'){ menuTap(p); return; }
+  if (scene === 'win'){ winTap(p); return; }
+  if (hudTap(p)) return;
+  var t = hitTsum(p);
+  if (t){ dragging = true; chain = [t]; t.hi = 1; blip(440, 0.08, 'sine', 0.08); }
+}
+function onMove(e){
+  if (!dragging || scene!=='play') return;
+  e.preventDefault();
+  var p = evPos(e), t = hitTsum(p);
+  if (!t) return;
+  var last = chain[chain.length-1];
+  if (t === last) return;
+  var prev = chain[chain.length-2];
+  if (t === prev){ last.hi = 0; chain.pop(); blip(330,0.06,'sine',0.06); return; } // 回滑取消
+  if (chain.indexOf(t) !== -1) return;
+  if (t.t !== last.t) return;
+  var dx = t.x-last.x, dy = t.y-last.y, lim = (t.r+last.r)*1.35;
+  if (dx*dx+dy*dy > lim*lim) return;
+  chain.push(t); t.hi = 1;
+  blip(440*Math.pow(2, Math.min(chain.length,12)/12), 0.08, 'sine', 0.09);
+}
+function onUp(e){
+  if (scene!=='play'){ dragging=false; return; }
+  if (!dragging) return;
+  dragging = false;
+  var n = chain.length;
+  if (n >= M.minChain) collect(chain.slice());
+  for (var i=0;i<chain.length;i++) chain[i].hi = 0;
+  chain = [];
+}
+cv.addEventListener('pointerdown', onDown);
+cv.addEventListener('pointermove', onMove);
+addEventListener('pointerup', onUp);
+cv.addEventListener('touchstart', function(e){e.preventDefault();}, {passive:false});
+
+// ---------- 收鏈=分給眾人 ----------
+function collect(list){
+  var n = list.length;
+  var mult = (n>=8?3 : n>=5?2 : 1) * (blessT>0?2:1);
+  var people = n * M.feed * mult;
+  fed = Math.min(M.target, fed + people);
+  chainCount++;
+  chordCollect(n);
+  for (var i=0;i<n;i++){
+    var t = list[i], idx = tsums.indexOf(t);
+    if (idx !== -1) tsums.splice(idx,1);
+    flying.push({ x:t.x, y:t.y, r:t.r, t:t.t, tx:rnd(60,W-60), ty:CROWD_TOP+CROWD_H*0.55, p:0, d:i*0.05 });
+  }
+  for (i=0;i<10+n*2;i++) sparks.push({ x:list[0].x, y:list[0].y, vx:rnd(-3,3), vy:rnd(-4,1), life:1 });
+  spawnQueue += n + 1;                      // ★越分越多:清 n 掉 n+1
+  banner = { text: n>=5 ? ('好長的一鏈!分給 '+people+' 人') : ('分給 '+people+' 人'), t:1.4 };
+  if (chainCount >= nextBlessAt && blessT<=0){
+    blessT = 8; nextBlessAt += (modeKey==='teen'?9:7);
+    banner = { text:'✨ 耶穌祝福擘餅——分出去加倍!', t:2.4 };
+    blip(784,0.4,'triangle',0.12); blip(988,0.5,'triangle',0.1);
+    if (!blessSpoken){ blessSpoken = true; speak('bless'); }
+  }
+  if (fed >= M.target && !won){
+    won = true; scene = 'win'; speak('win');
+    if (!doneSent){ doneSent = true;
+      if (window.__ping) window.__ping('fiveloaves-tsum-done', Math.round((Date.now()-startTime)/1000)); }
+  }
+}
+
+// ---------- 畫圖 ----------
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function drawFace(x,y,r,happy){
+  // 臉部鐵則:每顆 tsum 都有眼和嘴
+  ctx.fillStyle = '#3a2a18';
+  ctx.beginPath(); ctx.arc(x-r*0.28, y-r*0.08, r*0.085, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+r*0.28, y-r*0.08, r*0.085, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#3a2a18'; ctx.lineWidth = Math.max(2, r*0.07); ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(x, y+r*0.14, r*0.24, 0.25, Math.PI-0.25); ctx.stroke();
+  if (happy){
+    ctx.fillStyle = 'rgba(240,120,120,.45)';
+    ctx.beginPath(); ctx.arc(x-r*0.5, y+r*0.1, r*0.12, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+r*0.5, y+r*0.1, r*0.12, 0, 7); ctx.fill();
+  }
+}
+function drawTsum(t, xx, yy, rr){
+  var x = xx!==undefined?xx:t.x, y = yy!==undefined?yy:t.y, r = (rr!==undefined?rr:t.r) * (t.hi? 1.13:1);
+  var ty = t.t;
+  ctx.save();
+  if (t.hi){ ctx.shadowColor = '#fff'; ctx.shadowBlur = 14; }
+  if (ty.kind === 'bread'){
+    ctx.fillStyle = ty.c2;
+    ctx.beginPath(); ctx.arc(x, y+r*0.06, r, 0, 7); ctx.fill();
+    ctx.fillStyle = ty.c1;
+    ctx.beginPath(); ctx.arc(x, y-r*0.04, r*0.96, 0, 7); ctx.fill();
+    if (ty.dots){ ctx.fillStyle = 'rgba(90,60,30,.55)';
+      for (var i=0;i<6;i++){ var a2=i*1.05+0.4; ctx.beginPath();
+        ctx.arc(x+Math.cos(a2)*r*0.5, y-r*0.15+Math.sin(a2)*r*0.35, r*0.05, 0, 7); ctx.fill(); } }
+    if (ty.wheat){ ctx.strokeStyle='rgba(150,105,50,.6)'; ctx.lineWidth=r*0.06; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(x-r*0.35, y-r*0.5); ctx.quadraticCurveTo(x, y-r*0.7, x+r*0.35, y-r*0.5); ctx.stroke(); }
+    if (ty.swirl){ ctx.strokeStyle='rgba(255,225,170,.7)'; ctx.lineWidth=r*0.09;
+      ctx.beginPath(); ctx.arc(x, y-r*0.05, r*0.6, 2.6, 5.2); ctx.stroke(); }
+    drawFace(x, y-r*0.02, r, t.hi);
+  } else {
+    // 魚:圓身+尾鰭+背鰭,一樣有臉
+    ctx.fillStyle = ty.c2;
+    ctx.beginPath();
+    ctx.moveTo(x+r*0.75, y);
+    ctx.lineTo(x+r*1.25, y-r*0.5); ctx.lineTo(x+r*1.25, y+r*0.5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = ty.c1;
+    ctx.beginPath(); ctx.arc(x, y, r*0.95, 0, 7); ctx.fill();
+    ctx.fillStyle = ty.c2;
+    ctx.beginPath(); ctx.arc(x, y, r*0.95, -2.4, -0.7); ctx.lineTo(x, y-r*0.4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    ctx.beginPath(); ctx.arc(x-r*0.25, y+r*0.35, r*0.4, 0.3, 2.8); ctx.fill();
+    drawFace(x-r*0.15, y-r*0.05, r*0.9, t.hi);
+  }
+  ctx.restore();
+}
+function drawCrowdPerson(x, y, s, i, t){
+  // 坐在草地上的小人(有臉),吃飽比例越高越多人舉手歡呼
+  var happyN = Math.floor((fed/M.target)*CROWD_N);
+  var happy = i < happyN;
+  var bob = happy ? Math.sin(t*5 + i)*2 : 0;
+  ctx.fillStyle = ['#c96b4a','#7a9c5a','#5a7a9c','#9c7a5a','#8a5a9c'][i%5];
+  ctx.beginPath(); ctx.arc(x, y - 6*s + bob*0.3, 7*s, Math.PI, 0); ctx.fill();
+  ctx.fillRect(x-7*s, y-6*s+bob*0.3, 14*s, 6*s);
+  ctx.fillStyle = '#f2c9a0';
+  ctx.beginPath(); ctx.arc(x, y-13*s + bob, 5.2*s, 0, 7); ctx.fill();
+  ctx.fillStyle = '#4a3020';
+  ctx.beginPath(); ctx.arc(x, y-16*s + bob, 5*s, Math.PI*1.05, Math.PI*1.95); ctx.fill(); // 髮(耳前無髮)
+  ctx.fillStyle = '#2a1a10';
+  ctx.beginPath(); ctx.arc(x-1.8*s, y-13.5*s+bob, 0.7*s, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+1.8*s, y-13.5*s+bob, 0.7*s, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#2a1a10'; ctx.lineWidth = 0.8*s;
+  ctx.beginPath(); ctx.arc(x, y-11.8*s+bob, 1.6*s, 0.3, Math.PI-0.3); ctx.stroke();
+  if (happy){ // 舉手
+    ctx.strokeStyle = '#f2c9a0'; ctx.lineWidth = 2*s; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x-6*s, y-6*s); ctx.lineTo(x-9*s, y-16*s-bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+6*s, y-6*s); ctx.lineTo(x+9*s, y-16*s-bob); ctx.stroke();
+  }
+}
+var CROWD_N = 24, crowdPos = [];
+(function(){
+  for (var i=0;i<CROWD_N;i++){
+    crowdPos.push({ x: 36 + (i%8)*68 + ((i/8|0)%2)*30 + rnd(-8,8),
+                    y: CROWD_TOP + 52 + (i/8|0)*44 + rnd(-4,4), s: rnd(0.85,1.1) });
+  }
+})();
+
+function drawHUD(){
+  ctx.fillStyle = '#1e5c33';
+  ctx.fillRect(0,0,W,CROWD_TOP);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px "Microsoft JhengHei",sans-serif'; ctx.textAlign='center';
+  ctx.fillText('已吃飽 ' + Math.round(shownFed) + ' / ' + M.target + ' 人', W/2, 40);
+  // 返回大廳
+  ctx.font = '20px sans-serif'; ctx.textAlign='left';
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fillText('← 大廳', 12, 38);
+  ctx.textAlign='right';
+  ctx.fillText(muted?'🔇':'🔊', W-14, 38);
+  // 進度條
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; roundRect(80, 48, W-160, 10, 5); ctx.fill();
+  ctx.fillStyle = blessT>0 ? '#ffd54a' : '#8fdc7a';
+  var w = Math.max(10,(W-160)*Math.min(1, shownFed/M.target));
+  roundRect(80, 48, w, 10, 5); ctx.fill();
+}
+function hudTap(p){
+  if (p.y < CROWD_TOP){
+    if (p.x < 100){ location.href = 'https://hfpc-bible-games.netlify.app/'; return true; }
+    if (p.x > W-100){ muted = !muted; try{ localStorage.setItem('l2f-mute', muted?'1':'0'); }catch(e){} return true; }
+  }
+  return false;
+}
+
+function drawScene(t){
+  // 天空+草地
+  var g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#8ecfF0'); g.addColorStop(0.35,'#a8dcf2'); g.addColorStop(1,'#7ec9ea');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#5aa953';
+  ctx.fillRect(0, CROWD_TOP, W, CROWD_H);
+  ctx.fillStyle = 'rgba(255,255,255,.25)';
+  for (var i=0;i<3;i++){ ctx.beginPath();
+    ctx.ellipse(90+i*180 + Math.sin(t*0.3+i)*10, CROWD_TOP-24, 44,14, 0,0,7); ctx.fill(); }
+  for (i=0;i<CROWD_N;i++) drawCrowdPerson(crowdPos[i].x, crowdPos[i].y, crowdPos[i].s, i, t);
+  // 堆疊區底(布/籃)
+  ctx.fillStyle = '#e9dfc8';
+  ctx.fillRect(0, PLAY_TOP-6, W, FLOOR-PLAY_TOP+40);
+  ctx.fillStyle = 'rgba(160,130,80,.25)';
+  for (i=0;i<5;i++) ctx.fillRect(0, PLAY_TOP+ i*(FLOOR-PLAY_TOP)/5, W, 2);
+  ctx.fillStyle = '#caa96a'; ctx.fillRect(0, FLOOR, W, H-FLOOR);
+}
+function drawChainLine(){
+  if (chain.length < 2) return;
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 12; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(chain[0].x, chain[0].y);
+  for (var i=1;i<chain.length;i++) ctx.lineTo(chain[i].x, chain[i].y);
+  ctx.stroke();
+}
+
+// ---------- 開場/勝利畫面 ----------
+var menuBtns = [];
+function drawMenu(t){
+  drawScene(t);
+  ctx.fillStyle = 'rgba(20,45,28,.82)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center'; ctx.fillStyle = '#ffe9a8';
+  ctx.font = 'bold 52px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('五餅二魚', W/2, 190);
+  ctx.font = 'bold 34px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('越 分 越 多', W/2, 245);
+  // 示意 tsum
+  var demo = [TYPES[0], TYPES[5], TYPES[1], TYPES[6], TYPES[2]];
+  for (var i=0;i<5;i++) drawTsum({t:demo[i], hi:0}, 90+i*90, 330 + Math.sin(t*2+i)*8, 34);
+  ctx.fillStyle = '#fff'; ctx.font = '22px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('「在這裡有一個孩童,帶著五個大麥餅、兩條魚,', W/2, 420);
+  ctx.fillText('只是分給這許多人還算甚麼呢?」(約6:9)', W/2, 452);
+  ctx.font = '24px "Microsoft JhengHei",sans-serif'; ctx.fillStyle = '#cfe9d5';
+  ctx.fillText('劃線連起同款的餅或魚,分給眾人', W/2, 510);
+  ctx.fillText('主祝福擘開——越分越多,直到眾人吃飽!', W/2, 544);
+  menuBtns = [];
+  var keys = ['young','kid','teen'];
+  for (i=0;i<3;i++){
+    var y = 610 + i*92, sel = keys[i]===modeKey;
+    ctx.fillStyle = sel ? '#ffd54a' : 'rgba(255,255,255,.14)';
+    roundRect(W/2-170, y, 340, 72, 18); ctx.fill();
+    ctx.fillStyle = sel ? '#4a3510' : '#fff';
+    ctx.font = 'bold 30px "Microsoft JhengHei",sans-serif';
+    ctx.fillText(MODES[keys[i]].label + '・餵飽 ' + MODES[keys[i]].target + ' 人', W/2, y+46);
+    menuBtns.push({ x:W/2-170, y:y, w:340, h:72, key:keys[i] });
+  }
+  ctx.fillStyle = '#9fd6a8'; ctx.font = '20px sans-serif';
+  ctx.fillText('點一個年齡檔就開始 ▶', W/2, 910);
+}
+function menuTap(p){
+  for (var i=0;i<menuBtns.length;i++){
+    var b = menuBtns[i];
+    if (p.x>b.x && p.x<b.x+b.w && p.y>b.y && p.y<b.y+b.h){
+      modeKey = b.key; M = MODES[modeKey];
+      try{ localStorage.setItem('l2f-mode', modeKey); }catch(e){}
+      startGame(); return;
+    }
+  }
+}
+function startGame(){
+  tsums = []; chain = []; flying = []; sparks = [];
+  fed = 0; shownFed = 0; chainCount = 0; won = false; blessT = 0; blessSpoken = false;
+  nextBlessAt = modeKey==='young' ? 4 : 6;
+  spawnQueue = 0; doneSent = false;
+  var n = Math.min(CAP-6, Math.floor((W-20)/(2*M.r)) * 6);
+  for (var i=0;i<n;i++) spawnTsum();
+  scene = 'play'; playing = true; startTime = Date.now();
+  ac(); bgmStart(); speak('intro');
+  if (window.__ping) window.__ping('fiveloaves-tsum-start');
+}
+var winBtns = [];
+function drawWin(t){
+  drawScene(t);
+  for (var i=0;i<tsums.length;i++) drawTsum(tsums[i]);
+  ctx.fillStyle = 'rgba(20,45,28,.88)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 44px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('🎉 眾人都吃飽了!', W/2, 170);
+  // 十二個籃子
+  var bx0 = W/2 - 5.5*44, by = 260;
+  for (i=0;i<12;i++){
+    var bx = bx0 + i*44, fill = Math.min(1, Math.max(0, (t*4 - i*0.35)));
+    ctx.fillStyle = '#a97c3f';
+    ctx.beginPath(); ctx.moveTo(bx-16, by-14); ctx.lineTo(bx+16, by-14);
+    ctx.lineTo(bx+11, by+14); ctx.lineTo(bx-11, by+14); ctx.closePath(); ctx.fill();
+    if (fill > 0.2){
+      ctx.fillStyle = '#e8b64c';
+      ctx.beginPath(); ctx.arc(bx-6, by-16, 6,0,7); ctx.arc(bx+2, by-19, 7,0,7); ctx.arc(bx+9, by-15, 5,0,7); ctx.fill();
+    }
+  }
+  ctx.fillStyle = '#fff'; ctx.font = '23px "Microsoft JhengHei",sans-serif';
+  var L = ['「他們都吃,並且吃飽了;','把剩下的零碎收拾起來,','裝滿了十二個籃子。','吃的人,除了婦女孩子,約有五千。」','(馬太福音 14:20-21)'];
+  for (i=0;i<L.length;i++) ctx.fillText(L[i], W/2, 350 + i*40);
+  ctx.fillStyle = '#cfe9d5'; ctx.font = '22px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('五個餅、兩條魚,在主手中擘開——', W/2, 590);
+  ctx.fillText('小小的奉獻,經主祝福就夠眾人享用、還有餘。', W/2, 624);
+  winBtns = [];
+  var items = [['🔊 再聽經文','listen'],['再玩一次','again'],['← 回大廳','lobby']];
+  for (i=0;i<3;i++){
+    var y = 690 + i*84;
+    ctx.fillStyle = 'rgba(255,255,255,.15)'; roundRect(W/2-160, y, 320, 66, 16); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 27px "Microsoft JhengHei",sans-serif';
+    ctx.fillText(items[i][0], W/2, y+43);
+    winBtns.push({ x:W/2-160, y:y, w:320, h:66, act:items[i][1] });
+  }
+}
+function winTap(p){
+  for (var i=0;i<winBtns.length;i++){
+    var b = winBtns[i];
+    if (p.x>b.x && p.x<b.x+b.w && p.y>b.y && p.y<b.y+b.h){
+      if (b.act==='listen') speak('win');
+      else if (b.act==='again') scene = 'menu';
+      else location.href = 'https://hfpc-bible-games.netlify.app/';
+      return;
+    }
+  }
+}
+
+// ---------- 主迴圈 ----------
+var last = 0, winT = 0;
+function loop(ms){
+  requestAnimationFrame(loop);
+  var t = ms/1000, dt = Math.min(0.05, t-last); last = t;
+  if (scene === 'menu'){ drawMenu(t); return; }
+  if (scene === 'win'){ winT += dt; drawWin(winT); return; }
+  // play
+  if (blessT > 0) blessT -= dt;
+  spawnTick -= dt;
+  if (spawnQueue > 0 && spawnTick <= 0 && tsums.length < CAP){
+    spawnTsum(); spawnQueue--; spawnTick = 0.12;
+  }
+  physics(dt);
+  shownFed += (fed - shownFed) * Math.min(1, dt*6);
+  drawScene(t);
+  drawChainLine();
+  for (var i=0;i<tsums.length;i++) drawTsum(tsums[i]);
+  // 飛向群眾的食物
+  for (i=flying.length-1;i>=0;i--){
+    var f = flying[i];
+    if (f.d > 0){ f.d -= dt; drawTsum({t:f.t,hi:0}, f.x, f.y, f.r); continue; }
+    f.p += dt*2.4;
+    if (f.p >= 1){ flying.splice(i,1); continue; }
+    var e = 1-(1-f.p)*(1-f.p);
+    drawTsum({t:f.t,hi:0}, f.x+(f.tx-f.x)*e, f.y+(f.ty-f.y)*e - Math.sin(e*Math.PI)*80, f.r*(1-e*0.5));
+  }
+  for (i=sparks.length-1;i>=0;i--){
+    var s = sparks[i]; s.life -= dt*1.6; s.x += s.vx; s.y += s.vy; s.vy += 0.15;
+    if (s.life<=0){ sparks.splice(i,1); continue; }
+    ctx.fillStyle = 'rgba(255,230,140,'+s.life+')';
+    ctx.beginPath(); ctx.arc(s.x, s.y, 4*s.life, 0, 7); ctx.fill();
+  }
+  if (blessT > 0){
+    ctx.fillStyle = 'rgba(255,213,74,'+ (0.10+0.06*Math.sin(t*6)) +')';
+    ctx.fillRect(0, PLAY_TOP-6, W, FLOOR-PLAY_TOP+40);
+  }
+  drawHUD();
+  if (banner && banner.t > 0){
+    banner.t -= dt;
+    ctx.fillStyle = 'rgba(30,60,38,.85)';
+    roundRect(W/2-210, PLAY_TOP+8, 420, 52, 14); ctx.fill();
+    ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 24px "Microsoft JhengHei",sans-serif'; ctx.textAlign='center';
+    ctx.fillText(banner.text, W/2, PLAY_TOP+43);
+  }
+}
+requestAnimationFrame(loop);
+
+// ---------- 測試鉤子(?test=1 才掛;Playwright 驗證用,不影響玩家) ----------
+if (location.search.indexOf('test=1') !== -1){
+  window.__l2f = {
+    state: function(){ return { scene:scene, fed:fed, n:tsums.length, queue:spawnQueue, chains:chainCount, mode:modeKey }; },
+    start: function(k){ if(k && MODES[k]){ modeKey=k; M=MODES[k]; } startGame(); },
+    autoChain: function(){
+      // BFS 找一組同款相鄰 >= minChain,走正式 collect 路徑
+      for (var i=0;i<tsums.length;i++){
+        var seed = tsums[i], group = [seed], seen = [seed];
+        var grow = true;
+        while (grow && group.length < 9){
+          grow = false;
+          for (var j=0;j<tsums.length;j++){
+            var c = tsums[j];
+            if (seen.indexOf(c) !== -1 || c.t !== seed.t) continue;
+            var lastT = group[group.length-1];
+            var dx=c.x-lastT.x, dy=c.y-lastT.y, lim=(c.r+lastT.r)*1.35;
+            if (dx*dx+dy*dy <= lim*lim){ group.push(c); seen.push(c); grow = true; break; }
+          }
+        }
+        if (group.length >= M.minChain){ collect(group); return group.length; }
+      }
+      return 0;
+    },
+    win: function(){ fed = M.target - 1; return this.autoChain(); }
+  };
+}
+})();
