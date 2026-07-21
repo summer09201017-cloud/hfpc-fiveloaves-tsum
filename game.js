@@ -30,8 +30,8 @@ var TYPES = [
 // ---------- 年齡三檔(kid-age-modes) ----------
 var MODES = {
   young:{ label:'幼幼(4-6)', types:4, minChain:2, target:600,  r:47, feed:20 },
-  kid:  { label:'兒童(7-11)', types:6, minChain:3, target:2500, r:38, feed:15 },
-  teen: { label:'青少年(12+)', types:7, minChain:4, target:5000, r:32, feed:12 }
+  kid:  { label:'兒童(7-11)', types:6, minChain:3, target:3000, r:38, feed:13 },
+  teen: { label:'青少年(12+)', types:7, minChain:4, target:6000, r:32, feed:10 }
 };
 var modeKey = 'kid';
 try{ modeKey = localStorage.getItem('l2f-mode') || 'kid'; }catch(e){}
@@ -116,7 +116,7 @@ function rnd(a,b){ return a + Math.random()*(b-a); }
 function spawnTsum(){
   var ts = activeTypes(), t, x;
   // 07-22:群聚生成——45% 抄場上隨機一顆的型別、落在它附近,讓 5+ 長鏈自然可達(鏈長本無上限,是密度不夠)
-  var anchor = tsums.length && Math.random() < 0.45 ? tsums[(Math.random()*tsums.length)|0] : null;
+  var anchor = playing && tsums.length && Math.random() < 0.45 ? tsums[(Math.random()*tsums.length)|0] : null;   // 07-22:開場鋪場不群聚(會滾雪球整片同色),只在補球時群聚
   if (anchor && !anchor.t.wild){
     t = anchor.t;
     x = Math.max(M.r+6, Math.min(W-M.r-6, anchor.x + rnd(-70,70)));
