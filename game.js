@@ -124,7 +124,9 @@ function spawnTsum(){
     t = ts[(Math.random()*ts.length)|0];
     x = rnd(M.r+6, W-M.r-6);
   }
-  tsums.push({ x:x, y:PLAY_TOP - rnd(20,140), px:0, py:0, r:M.r, t:t,
+  // 07-22:有大有小(像一網滿滿的魚)——15% 大隻 1.3×、~25% 小隻 0.78×、其餘微抖動
+  var sr = M.r * (Math.random()<0.15 ? 1.3 : (Math.random()<0.3 ? 0.78 : rnd(0.92,1.08)));
+  tsums.push({ x:x, y:PLAY_TOP - rnd(20,140), px:0, py:0, r:sr, t:t,
                wob:Math.random()*6.28, hi:0 });
   var s = tsums[tsums.length-1]; s.px = s.x; s.py = s.y - rnd(0,2);
 }
