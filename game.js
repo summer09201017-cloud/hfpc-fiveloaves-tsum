@@ -201,6 +201,7 @@ function onUp(e){
 cv.addEventListener('pointerdown', onDown);
 cv.addEventListener('pointermove', onMove);
 addEventListener('pointerup', onUp);
+addEventListener('pointercancel', onUp);   // 07-22 修:手機手勢中斷只發 cancel,不接=dragging 卡死→救援全停
 cv.addEventListener('touchstart', function(e){e.preventDefault();}, {passive:false});
 
 // ---------- 收鏈=分給眾人 ----------
@@ -265,8 +266,13 @@ function rescue(){
     return da-db;
   });
   for (var i=0;i<M.minChain-1 && i<rest.length;i++){
-    rest[i].t = seed.t;
-    for (var k=0;k<6;k++) sparks.push({ x:rest[i].x, y:rest[i].y, vx:rnd(-2,2), vy:rnd(-3,1), life:1 });
+    var c = rest[i]; c.t = seed.t;
+    // 07-22 修:光變同款不保證在可連距離(1.35×半徑和)內——就地聚攏到 seed 旁,救援必產生可連組
+    var ang = 0.6 + i*2.1;
+    c.x = Math.max(c.r, Math.min(W-c.r, seed.x + Math.cos(ang)*(seed.r+c.r)*0.9));
+    c.y = Math.min(FLOOR-c.r, seed.y + Math.sin(ang)*(seed.r+c.r)*0.9);
+    c.px = c.x; c.py = c.y;
+    for (var k=0;k<6;k++) sparks.push({ x:c.x, y:c.y, vx:rnd(-2,2), vy:rnd(-3,1), life:1 });
   }
   banner = { text:"✨ 主祝福——餅和魚聚在一起了!", t:2.0 };
   blip(659,0.3,'triangle',0.1);
@@ -556,7 +562,9 @@ function loop(ms){
     }
     if (!hintGroup && !dragging){
       var g0 = findGroup();
-      if (!g0 && spawnQueue===0 && flying.length===0){ rescue(); g0 = findGroup(); }
+      // 07-22 修:場滿 CAP 時 spawnQueue 永遠掉不到 0(生成被 tsums.length<CAP 擋)
+      // →舊條件 spawnQueue===0 讓救援永不觸發=死局;場滿就直接放行救援
+      if (!g0 && flying.length===0 && (spawnQueue===0 || tsums.length >= CAP)){ rescue(); g0 = findGroup(); }
       if (hintT >= 4 && g0) hintGroup = g0;
     }
   }
@@ -605,7 +613,18 @@ requestAnimationFrame(loop);
 // ---------- 測試鉤子(?test=1 才掛;Playwright 驗證用,不影響玩家) ----------
 if (location.search.indexOf('test=1') !== -1){
   window.__l2f = {
-    state: function(){ return { scene:scene, fed:fed, n:tsums.length, queue:spawnQueue, chains:chainCount, mode:modeKey }; },
+    state: function(){ return { scene:scene, fed:fed, n:tsums.length, queue:spawnQueue, chains:chainCount, mode:modeKey, dragging:dragging, hint:!!hintGroup }; },
+    deadlock: function(){
+      // 重現 07-22 死局:場滿 CAP+隊列>0+全場無同款相鄰(每顆給獨一無二的假型別)
+      while (tsums.length < CAP) spawnTsum();
+      tsums.length = CAP;
+      for (var i=0;i<tsums.length;i++){
+        var ty = tsums[i].t;
+        tsums[i].t = { id:'zz'+i, kind:ty.kind, name:ty.name, c1:ty.c1, c2:ty.c2 };
+      }
+      spawnQueue = 5; hintT = 5; checkT = 0; hintGroup = null;
+      return { n:tsums.length, queue:spawnQueue, group:findGroup()?1:0 };
+    },
     start: function(k){ if(k && MODES[k]){ modeKey=k; M=MODES[k]; } startGame(); },
     autoChain: function(){
       // BFS 找一組同款相鄰 >= minChain,走正式 collect 路徑
